@@ -10,27 +10,28 @@ NGINX 备忘清单
 <!--rehype:wrap-class=row-span-2-->
 
 ```bash
-sudo systemctl status nginx # nginx当前状态
-sudo systemctl reload nginx # 重新加载 nginx
+sudo systemctl reload nginx  # 重新加载 nginx
 sudo systemctl restart nginx # 重启nginx
-
-sudo nginx -t   # 检查语法
 nginx           # 启动
 nginx -s reload # 重启
 nginx -s stop   # 关闭进程
 nginx -s quit   # 平滑关闭nginx
+```
+
+状态
+
+```bash
+sudo systemctl status nginx # nginx当前状态
 nginx -V        # 查看nginx的安装状态，
 ```
 
-### Docker 安装
-<!--rehype:wrap-class=col-span-2-->
+检查语法
 
 ```bash
-docker run --name some-nginx -v /some/content:/usr/share/nginx/html:ro -d nginx
+sudo nginx -t   # 检查语法
 ```
 
 ### 简单代理
-<!--rehype:wrap-class=col-span-2-->
 
 ```nginx
 location / {
@@ -39,6 +40,41 @@ location / {
   proxy_set_header    Host $host;
 }
 ```
+
+### 简单代理
+<!--rehype:wrap-class=row-span-2-->
+
+Ubuntu/Debian
+
+```shell
+$ sudo apt update && sudo apt install -y nginx
+```
+<!--rehype:className=wrap-text-->
+
+RHEL/CentOS
+
+```shell
+$ sudo yum install -y epel-release nginx && sudo systemctl enable --now nginx
+```
+<!--rehype:className=wrap-text-->
+
+Docker 安装
+
+```bash
+$ docker run --name some-nginx -v /some/content:/usr/share/nginx/html:ro -d nginx
+```
+<!--rehype:className=wrap-text-->
+
+### 配置路径
+
+- `/etc/nginx/nginx.conf` _(main config)_
+- `/etc/nginx/conf.d/*.conf` _(drop‑ins)_
+- `/etc/nginx/sites-available/` + `sites-enabled/` _(Debian style)_
+- `/var/www/html` _(default docroot)_
+- `logs`: `/var/log/nginx/access.log`, `/var/log/nginx/error.log`
+
+配置
+---
 
 ### 全局变量
 <!--rehype:wrap-class=col-span-2 row-span-4-->
@@ -295,34 +331,75 @@ server {
 server {
   listen 443 ssl http2;
   server_name example.com;
-  ssl on;
 
   ssl_certificate /path/to/cert.pem;
   ssl_certificate_key /path/to/privkey.pem;
-
-  ssl_stapling on;
-  ssl_stapling_verify on;
-  ssl_trusted_certificate /path/to/fullchain.pem;
-
-  ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+ 
+  # 优化 SSL 配置
+  ssl_protocols TLSv1.2 TLSv1.3;  # 禁用旧版 TLS
+  ssl_prefer_server_ciphers on;
+  ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256';
   ssl_session_timeout 1d;
-  ssl_session_cache shared:SSL:50m;
-  add_header Strict-Transport-Security max-age=15768000;
+  ssl_session_cache shared:SSL:10m;
+
+  # 其他配置（如根目录、代理等）
+  root /var/www/html;
+  index index.html;
+
+  location / {
+      try_files $uri $uri/ =404;
+  }
+ 
 }
 ```
 
 您可以使用 Let's Encrypt 轻松保护您的网站/应用程序。去 [lets-encrypt](https://certbot.eff.org/lets-encrypt/ubuntuxenial-nginx.html) 获取更多信息
 
-### 重定向(301永久)
-<!--rehype:wrap-class=row-span-2-->
+虚拟主机与重定向
+---
 
-将 <www.example.com> 重定向到 example.com
+### 基础服务器块
 
 ```nginx
 server {
   listen 80;
-  server_name www.example.com;
-  return 301 http://example.com$request_uri;
+  server_name example.com www.example.com;
+  root /var/www/example/public;
+  index index.html index.htm;
+}
+```
+
+### HTTP→HTTPS 重定向
+
+```nginx
+server {
+  listen 80;
+  server_name demo.com www.demo.com;
+  return 301 https://demo.com$request_uri;
+}
+```
+
+### 规范主机
+
+```nginx
+# Force non-www
+server {
+  listen 80;
+  server_name www.demo.com;
+  return 301 $scheme://demo.com$request_uri;
+}
+```
+
+### 重定向(301永久)
+<!--rehype:wrap-class=row-span-2-->
+
+将 <www.demo.com> 重定向到 demo.com
+
+```nginx
+server {
+  listen 80;
+  server_name www.demo.com;
+  return 301 http://demo.com$request_uri;
 }
 ```
 
@@ -331,8 +408,8 @@ server {
 ```nginx
 server {
   listen 80;
-  server_name example.com;
-  return 301 https://example.com$request_uri;
+  server_name demo.com;
+  return 301 https://demo.com$request_uri;
 }
 ```
 
@@ -889,6 +966,89 @@ add_header X-Robots-Tag "noindex";
 
 location = /robots.txt {
   return 200 "User-agent: *\nDisallow: /\n";
+}
+```
+
+### 获取请求ip
+<!--rehype:wrap-class=col-span-3-->
+
+```nginx
+server {
+  listen 80;
+  server_name xxx.top;
+
+  location / {
+    access_log /data/logs/nginx/json_ip.log json;
+    proxy_set_header Host $http_host;
+        proxy_set_header X-Real-Ip $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_pass http://127.0.0.1:9999;
+  }
+}
+
+server {
+  listen 9999;
+
+  location / {
+    access_log off;
+    default_type application/json;
+    return 200 "{\"ip\":\"$http_X_Real_Ip\"}";
+  }
+}
+```
+
+### 判断请求参数
+<!--rehype:wrap-class=col-span-3-->
+
+```nginx
+# 判断多个参数示例
+set $flagts 0;
+if ( $arg_aaa ~ "^aaa" ) {
+    set $flagts "${flagts}1";
+}
+if ( $arg_bbb ~ "^bbb" ) {
+    set $flagts "${flagts}1";
+}
+if ( $flagts = "011" ) {
+    return 200;
+}
+```
+
+### 流量镜像配置
+<!--rehype:wrap-class=col-span-3-->
+
+```nginx
+server {
+    listen       80;
+    server_name 192.168.1.1;
+
+    location = /mirror1 {
+        internal;
+        #### address1 ####
+        proxy_set_header Host mirror1.com;
+        proxy_pass http://127.0.0.1:8008/api/service/list;
+    }
+
+    location = /mirror2 {
+        internal;
+        #### address2 ####
+        proxy_set_header Host mirror2.com;
+        proxy_pass http://127.0.0.1:8009/api/service/list;
+    }
+
+    # 只转发这个接口
+    location /api/service/list {
+        access_log /data/logs/nginx/json_test_to_mirror.log json;
+        mirror /mirror1;
+        mirror /mirror2;
+        proxy_pass http://127.0.0.1:8007;
+    }
+
+    location / {
+        access_log /data/logs/nginx/json_test.log json;
+        proxy_pass http://192.168.1.1:8007;
+    }
+
 }
 ```
 
